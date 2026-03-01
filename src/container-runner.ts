@@ -100,6 +100,16 @@ function buildVolumeMounts(
     }
   }
 
+  // Mount Obsidian vault into container
+  const vaultDir = path.join(projectRoot, 'vault');
+  if (fs.existsSync(vaultDir)) {
+    mounts.push({
+      hostPath: vaultDir,
+      containerPath: '/workspace/extra/vault',
+      readonly: !isMain, // Main group: read-write, others: read-only
+    });
+  }
+
   // Per-group Claude sessions directory (isolated from other groups)
   // Each group gets their own .claude/ to prevent cross-group session access
   const groupSessionsDir = path.join(

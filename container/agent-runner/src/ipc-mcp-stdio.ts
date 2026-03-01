@@ -280,6 +280,96 @@ Use available_groups.json to find the JID for a group. The folder name should be
   },
 );
 
+server.tool(
+  'trigger_zenml_pipeline',
+  'Trigger a ZenML pipeline run. The pipeline will execute on ZenML Cloud and results will be reported back.',
+  {
+    pipeline_name: z.string().describe('Name of the pipeline to trigger (e.g., "inbox_processor", "morning_briefing", "document_processor")'),
+    params: z.record(z.string(), z.string()).optional().describe('Optional parameters to pass to the pipeline run'),
+  },
+  async (args) => {
+    if (!isMain) {
+      return {
+        content: [{ type: 'text' as const, text: 'Only the main group can trigger ZenML pipelines.' }],
+        isError: true,
+      };
+    }
+
+    const data = {
+      type: 'trigger_zenml_pipeline',
+      pipeline_name: args.pipeline_name,
+      params: args.params || {},
+      chatJid,
+      groupFolder,
+      timestamp: new Date().toISOString(),
+    };
+
+    writeIpcFile(TASKS_DIR, data);
+
+    return {
+      content: [{ type: 'text' as const, text: `Pipeline "${args.pipeline_name}" trigger requested. You'll receive a status update when it starts.` }],
+    };
+  },
+);
+
+server.tool(
+  'check_pipeline_status',
+  'Check the status of a ZenML pipeline run.',
+  {
+    run_id: z.string().describe('The ZenML pipeline run ID to check'),
+  },
+  async (args) => {
+    if (!isMain) {
+      return {
+        content: [{ type: 'text' as const, text: 'Only the main group can check ZenML pipeline status.' }],
+        isError: true,
+      };
+    }
+
+    const data = {
+      type: 'check_pipeline_status',
+      run_id: args.run_id,
+      chatJid,
+      groupFolder,
+      timestamp: new Date().toISOString(),
+    };
+
+    writeIpcFile(TASKS_DIR, data);
+
+    return {
+      content: [{ type: 'text' as const, text: `Status check requested for pipeline run ${args.run_id}.` }],
+    };
+  },
+);
+
+server.tool(
+  'list_pipelines',
+  'List available ZenML pipelines and their recent runs.',
+  {},
+  async () => {
+    if (!isMain) {
+      return {
+        content: [{ type: 'text' as const, text: 'Only the main group can list ZenML pipelines.' }],
+        isError: true,
+      };
+    }
+
+    // Read pipeline status from IPC file (similar to current_tasks.json)
+    const pipelinesFile = path.join(IPC_DIR, 'zenml_pipelines.json');
+    try {
+      if (!fs.existsSync(pipelinesFile)) {
+        return { content: [{ type: 'text' as const, text: 'No ZenML pipeline information available. Trigger a pipeline first, or wait for the next status sync.' }] };
+      }
+      const pipelines = JSON.parse(fs.readFileSync(pipelinesFile, 'utf-8'));
+      return { content: [{ type: 'text' as const, text: JSON.stringify(pipelines, null, 2) }] };
+    } catch (err) {
+      return {
+        content: [{ type: 'text' as const, text: `Error reading pipelines: ${err instanceof Error ? err.message : String(err)}` }],
+      };
+    }
+  },
+);
+
 // Start the stdio transport
 const transport = new StdioServerTransport();
 await server.connect(transport);
