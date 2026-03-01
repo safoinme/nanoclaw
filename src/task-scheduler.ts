@@ -201,6 +201,9 @@ async function runTask(
   } else if (task.schedule_type === 'interval') {
     const ms = parseInt(task.schedule_value, 10);
     nextRun = new Date(Date.now() + ms).toISOString();
+  } else if (task.schedule_type === 'zenml_pipeline') {
+    // ZenML pipeline tasks are one-shot triggers — ZenML Cloud handles recurring scheduling
+    nextRun = null;
   }
   // 'once' tasks have no next run
 

@@ -12,6 +12,7 @@ import {
 import { AvailableGroup } from './container-runner.js';
 import { createTask, deleteTask, getTaskById, updateTask } from './db.js';
 import { isValidGroupFolder } from './group-folder.js';
+import { ZenMLClient } from './integrations/zenml-client.js';
 import { logger } from './logger.js';
 import { RegisteredGroup } from './types.js';
 
@@ -170,6 +171,10 @@ export async function processTaskIpc(
     trigger?: string;
     requiresTrigger?: boolean;
     containerConfig?: RegisteredGroup['containerConfig'];
+    // For ZenML pipeline triggers
+    pipeline_name?: string;
+    pipeline_params?: Record<string, string>;
+    run_id?: string;
   },
   sourceGroup: string, // Verified identity from IPC directory
   isMain: boolean, // Verified from directory path
@@ -380,6 +385,105 @@ export async function processTaskIpc(
         );
       }
       break;
+
+    case 'trigger_zenml_pipeline': {
+      if (!isMain) {
+        logger.warn(
+          { sourceGroup },
+          'Unauthorized trigger_zenml_pipeline attempt blocked',
+        );
+        break;
+      }
+      if (!data.pipeline_name) {
+        logger.warn('trigger_zenml_pipeline missing pipeline_name');
+        break;
+      }
+      try {
+        const zenml = new ZenMLClient();
+        const pipelines = await zenml.listPipelines();
+        const pipeline = pipelines.items.find(
+          (p) => p.name === data.pipeline_name,
+        );
+        if (!pipeline) {
+          const msg = `Pipeline "${data.pipeline_name}" not found`;
+          logger.warn(msg);
+          if (data.chatJid) await deps.sendMessage(data.chatJid, msg);
+          break;
+        }
+        const snapshots = await zenml.listSnapshots(pipeline.id);
+        if (!snapshots.items.length) {
+          const msg = `No snapshots found for pipeline "${data.pipeline_name}"`;
+          logger.warn(msg);
+          if (data.chatJid) await deps.sendMessage(data.chatJid, msg);
+          break;
+        }
+        const latestSnapshot = snapshots.items[0];
+        const run = await zenml.triggerSnapshot(
+          latestSnapshot.id as string,
+          data.pipeline_params
+            ? { parameters: data.pipeline_params }
+            : undefined,
+        );
+        logger.info(
+          { pipelineName: data.pipeline_name, runId: run.id },
+          'ZenML pipeline triggered',
+        );
+        if (data.chatJid) {
+          await deps.sendMessage(
+            data.chatJid,
+            `Pipeline "${data.pipeline_name}" triggered. Run ID: ${run.id}`,
+          );
+        }
+      } catch (err) {
+        const error = err instanceof Error ? err.message : String(err);
+        logger.error({ error }, 'Failed to trigger ZenML pipeline');
+        if (data.chatJid) {
+          await deps.sendMessage(
+            data.chatJid,
+            `Failed to trigger pipeline: ${error}`,
+          );
+        }
+      }
+      break;
+    }
+
+    case 'check_pipeline_status': {
+      if (!isMain) {
+        logger.warn(
+          { sourceGroup },
+          'Unauthorized check_pipeline_status attempt blocked',
+        );
+        break;
+      }
+      if (!data.run_id) {
+        logger.warn('check_pipeline_status missing run_id');
+        break;
+      }
+      try {
+        const zenml = new ZenMLClient();
+        const run = await zenml.getPipelineRun(data.run_id);
+        logger.info(
+          { runId: data.run_id, status: run.status },
+          'Pipeline run status retrieved',
+        );
+        if (data.chatJid) {
+          await deps.sendMessage(
+            data.chatJid,
+            `Pipeline run ${data.run_id}: ${run.status}`,
+          );
+        }
+      } catch (err) {
+        const error = err instanceof Error ? err.message : String(err);
+        logger.error({ error, runId: data.run_id }, 'Failed to check pipeline status');
+        if (data.chatJid) {
+          await deps.sendMessage(
+            data.chatJid,
+            `Failed to check pipeline status: ${error}`,
+          );
+        }
+      }
+      break;
+    }
 
     default:
       logger.warn({ type: data.type }, 'Unknown IPC task type');
