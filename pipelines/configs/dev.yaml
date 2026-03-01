@@ -1,0 +1,20 @@
+# Development configuration for NanoClaw pipelines
+# Usage: python run.py --pipeline <name> --config configs/dev.yaml
+
+enable_cache: false
+
+parameters:
+  inbox_path: ""
+  feeds_config: ""
+  file_path: ""
+
+settings:
+  docker:
+    requirements:
+      - pydantic-ai[anthropic]
+      - python-frontmatter
+      - obsidiantools
+      - e2b-code-interpreter
+      - httpx
+      - feedparser
+    python_package_installer: uv

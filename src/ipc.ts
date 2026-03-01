@@ -474,7 +474,10 @@ export async function processTaskIpc(
         }
       } catch (err) {
         const error = err instanceof Error ? err.message : String(err);
-        logger.error({ error, runId: data.run_id }, 'Failed to check pipeline status');
+        logger.error(
+          { error, runId: data.run_id },
+          'Failed to check pipeline status',
+        );
         if (data.chatJid) {
           await deps.sendMessage(
             data.chatJid,

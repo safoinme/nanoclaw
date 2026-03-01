@@ -36,9 +36,10 @@ export class ZenMLClient {
   private tokenCache: TokenCache | null = null;
 
   constructor() {
-    this.storeUrl = (
-      process.env.ZENML_STORE_URL || DEFAULT_STORE_URL
-    ).replace(/\/+$/, '');
+    this.storeUrl = (process.env.ZENML_STORE_URL || DEFAULT_STORE_URL).replace(
+      /\/+$/,
+      '',
+    );
     this.apiKey = process.env.ZENML_STORE_API_KEY || '';
     if (!this.apiKey) {
       logger.warn('ZENML_STORE_API_KEY not set — ZenML client will not work');
@@ -105,7 +106,9 @@ export class ZenMLClient {
 
     if (!res.ok) {
       const text = await res.text();
-      throw new Error(`ZenML API ${method} ${path} failed (${res.status}): ${text}`);
+      throw new Error(
+        `ZenML API ${method} ${path} failed (${res.status}): ${text}`,
+      );
     }
 
     return res.json() as Promise<T>;
