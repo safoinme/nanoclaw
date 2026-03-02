@@ -281,10 +281,58 @@ Use available_groups.json to find the JID for a group. The folder name should be
 );
 
 server.tool(
+  'ingest_knowledge',
+  `Ingest content into the Obsidian knowledge vault. Use this when the user shares:
+- A URL to an article, blog post, documentation, or webpage
+- A PDF document (as base64)
+- Raw text or notes they want to capture
+- A conversation transcript worth preserving
+
+The pipeline will: extract key concepts, cross-reference existing notes, create/update vault notes with wikilinks, and optionally synthesize MOC pages.
+
+DO NOT use this for:
+- Simple questions that don't need to be saved
+- Temporary information (weather, current time)
+- Commands or instructions to you`,
+  {
+    content: z.string().describe('The content to ingest: a URL, base64-encoded PDF, or raw text'),
+    content_type: z.enum(['url', 'pdf_b64', 'text', 'conversation']).describe('Type of content being ingested'),
+    source_title: z.string().optional().describe('Human-readable title for the source (auto-detected for URLs)'),
+  },
+  async (args) => {
+    if (!isMain) {
+      return {
+        content: [{ type: 'text' as const, text: 'Only the main group can ingest knowledge.' }],
+        isError: true,
+      };
+    }
+
+    const data = {
+      type: 'trigger_zenml_pipeline',
+      pipeline_name: 'knowledge_ingest',
+      params: {
+        content: args.content,
+        content_type: args.content_type,
+        source_title: args.source_title || '',
+      },
+      chatJid,
+      groupFolder,
+      timestamp: new Date().toISOString(),
+    };
+
+    writeIpcFile(TASKS_DIR, data);
+
+    return {
+      content: [{ type: 'text' as const, text: `Knowledge ingestion request queued for ${args.content_type} content. The host will attempt to trigger the ZenML pipeline — wait for the confirmation message before telling the user it worked. If the pipeline fails, the user will receive an error message instead.` }],
+    };
+  },
+);
+
+server.tool(
   'trigger_zenml_pipeline',
   'Trigger a ZenML pipeline run. The pipeline will execute on ZenML Cloud and results will be reported back.',
   {
-    pipeline_name: z.string().describe('Name of the pipeline to trigger (e.g., "inbox_processor", "morning_briefing", "document_processor")'),
+    pipeline_name: z.string().describe('Name of the pipeline to trigger (e.g., "knowledge_ingest")'),
     params: z.record(z.string(), z.string()).optional().describe('Optional parameters to pass to the pipeline run'),
   },
   async (args) => {
@@ -307,7 +355,7 @@ server.tool(
     writeIpcFile(TASKS_DIR, data);
 
     return {
-      content: [{ type: 'text' as const, text: `Pipeline "${args.pipeline_name}" trigger requested. You'll receive a status update when it starts.` }],
+      content: [{ type: 'text' as const, text: `Pipeline "${args.pipeline_name}" trigger request queued. The host will attempt to call the ZenML API — wait for the confirmation message before telling the user it worked. If it fails, the user will receive an error message instead.` }],
     };
   },
 );

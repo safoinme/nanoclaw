@@ -1,29 +1,12 @@
 """CLI entry point for NanoClaw pipelines."""
 
-from __future__ import annotations
-
 import argparse
 import sys
 
-from pipelines.content_monitor import SCHEDULE as CONTENT_SCHEDULE
-from pipelines.content_monitor import content_monitor
-from pipelines.document_processor import document_processor
-from pipelines.inbox_processor import SCHEDULE as INBOX_SCHEDULE
-from pipelines.inbox_processor import inbox_processor
-from pipelines.morning_briefing import SCHEDULE as BRIEFING_SCHEDULE
-from pipelines.morning_briefing import morning_briefing
-from pipelines.personal_crm import SCHEDULE as CRM_SCHEDULE
-from pipelines.personal_crm import personal_crm
-from pipelines.weekly_review import SCHEDULE as REVIEW_SCHEDULE
-from pipelines.weekly_review import weekly_review
+from pipelines.knowledge_ingest import knowledge_ingest_pipeline
 
 PIPELINES = {
-    "inbox_processor": (inbox_processor, INBOX_SCHEDULE),
-    "morning_briefing": (morning_briefing, BRIEFING_SCHEDULE),
-    "personal_crm": (personal_crm, CRM_SCHEDULE),
-    "document_processor": (document_processor, None),
-    "weekly_review": (weekly_review, REVIEW_SCHEDULE),
-    "content_monitor": (content_monitor, CONTENT_SCHEDULE),
+    "knowledge_ingest": knowledge_ingest_pipeline,
 }
 
 
@@ -32,8 +15,8 @@ def main() -> None:
     parser.add_argument(
         "--pipeline",
         choices=list(PIPELINES.keys()),
-        required=True,
-        help="Which pipeline to run",
+        default="knowledge_ingest",
+        help="Which pipeline to run (default: knowledge_ingest)",
     )
     parser.add_argument(
         "--config",
@@ -46,38 +29,47 @@ def main() -> None:
         help="Disable step caching",
     )
     parser.add_argument(
-        "--schedule",
-        action="store_true",
-        help="Deploy with the pipeline's default schedule",
+        "--content",
+        required=True,
+        help="Content to ingest: URL, base64 PDF, or raw text",
     )
     parser.add_argument(
-        "--file-path",
+        "--content-type",
+        choices=["url", "pdf_b64", "text", "conversation"],
+        default="text",
+        help="Type of content (default: text)",
+    )
+    parser.add_argument(
+        "--source-title",
         default="",
-        help="File path for document_processor pipeline",
+        help="Optional human-readable source title",
+    )
+    parser.add_argument(
+        "--synthesis-threshold",
+        type=int,
+        default=5,
+        help="Minimum notes per tag to trigger synthesis (default: 5)",
     )
     args = parser.parse_args()
 
-    pipeline_fn, schedule = PIPELINES[args.pipeline]
+    pipeline_fn = PIPELINES[args.pipeline]
 
     options: dict = {
         "config_path": args.config,
         "enable_cache": not args.no_cache,
     }
 
-    if args.schedule and schedule is not None:
-        options["schedule"] = schedule
-    elif args.schedule and schedule is None:
-        print(f"Pipeline '{args.pipeline}' does not support scheduling (on-demand only).")
-        sys.exit(1)
-
     instance = pipeline_fn.with_options(**options)
+    instance.configure(secrets=["nanoclaw_api_keys"])
 
-    # Pass pipeline-specific parameters
-    if args.pipeline == "document_processor" and args.file_path:
-        instance(file_path=args.file_path)
-    else:
-        instance()
-
+    instance(
+        content=args.content,
+        content_type=args.content_type,
+        source_title=args.source_title,
+        synthesis_threshold=args.synthesis_threshold,
+    )
+    snapshot = instance.create_snapshot(name="knowledge_ingest", replace=True)
+    print(f"Snapshot created: {snapshot.name}")
 
 if __name__ == "__main__":
     main()

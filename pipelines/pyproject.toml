@@ -3,13 +3,13 @@ name = "nanoclaw-pipelines"
 version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = [
-    "zenml>=0.93",
+    "zenml>=0.93.3",
     "pydantic-ai[anthropic]",
     "python-frontmatter",
-    "obsidiantools",
     "e2b-code-interpreter",
     "httpx",
-    "feedparser",
+    "readability-lxml",
+    "python-slugify",
 ]
 
 [project.optional-dependencies]

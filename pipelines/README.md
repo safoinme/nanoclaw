@@ -1,6 +1,8 @@
 # NanoClaw Pipelines
 
-ZenML pipelines for Obsidian vault automation, personal CRM, and content monitoring. Connects to [ZenML Cloud](https://cloud.zenml.io) for orchestration and tracking.
+ZenML-based Knowledge Ingestion & Synthesis pipeline for the Obsidian vault. Acquires content (URL/PDF/text), extracts atomic concepts via PydanticAI, cross-references the vault, creates/updates notes with wikilinks, and conditionally synthesizes MOC pages.
+
+Connects to [ZenML Cloud](https://cloud.zenml.io) for orchestration and tracking. Vault storage uses the ZenML artifact store's S3 bucket with a `vault/` prefix.
 
 ## Install
 
@@ -17,188 +19,130 @@ If `uv` is unavailable: `pip install -e ".[dev]"`
 Set required environment variables:
 
 ```bash
-export ZENML_STORE_URL="https://11870fb5-zenml.cloudinfra.zenml.io"
+export ZENML_STORE_URL="https://your-tenant.cloudinfra.zenml.io"
 export ZENML_STORE_API_KEY="your-api-key"
-export VAULT_ROOT="$HOME/obsidian-vault"
-export ANTHROPIC_API_KEY="your-key"
+export AI_MODEL="openai:gpt-4o"          # PydanticAI model string (provider:model)
+export OPENAI_API_KEY="your-key"         # or ANTHROPIC_API_KEY for anthropic: models
+export E2B_API_KEY="your-key"            # Required for PDF processing
 
-# Optional (for specific pipelines):
-export E2B_API_KEY="..."
+# Vault
+export VAULT_ROOT="$HOME/obsidian-vault"  # Local fallback for dev/testing
+export VAULT_PREFIX="vault"               # Prefix in artifact store (default: "vault")
 ```
 
-Store sensitive credentials in the ZenML secret store:
-
-```bash
-zenml secret create github_token --token=ghp_...
-zenml secret create gmail_credentials --access_token=...
-zenml secret create google_calendar_credentials --access_token=...
-zenml secret create slack_credentials --bot_token=xoxb-... --channels=C01,C02
-zenml secret create discord_credentials --bot_token=... --channels=123,456
-```
+No AWS credentials needed — ZenML handles S3 auth through its service connectors.
 
 ## Run
 
 ```bash
-python run.py --pipeline <name> --config configs/dev.yaml
-python run.py --pipeline <name> --no-cache
-python run.py --pipeline <name> --schedule     # Deploy with recurring schedule
-python run.py --pipeline document_processor --file-path /path/to/file.pdf
+# Ingest a URL
+python run.py --content "https://example.com/article" --content-type url
+
+# Ingest raw text
+python run.py --content "Key insight about distributed systems..." --content-type text --source-title "Arch notes"
+
+# Ingest a conversation
+python run.py --content "Alice: Let's use Kafka. Bob: Agreed." --content-type conversation
+
+# Base64 PDF
+python run.py --content "$(base64 < document.pdf)" --content-type pdf_b64
+
+# Disable caching
+python run.py --content "..." --content-type text --no-cache
+
+# Custom synthesis threshold (default: 5)
+python run.py --content "..." --content-type text --synthesis-threshold 3
+
+# Custom config
+python run.py --content "..." --content-type text --config configs/dev.yaml
 ```
 
-Assumes a configured ZenML stack. See [ZenML docs](https://docs.zenml.io) for stack setup.
+## Pipeline
 
-## Quick Start: Minimal Test
-
-You only need **two secrets** to run a useful subset of pipelines. Sources without configured secrets (Gmail, Slack, Discord) gracefully return empty results — the pipeline still completes.
-
-### 1. GitHub token
-
-Create a [personal access token](https://github.com/settings/tokens) with `repo` and `notifications` scopes:
-
-```bash
-zenml secret create github_token --token=ghp_yourTokenHere
-```
-
-### 2. Google Calendar credentials
-
-Create OAuth credentials in the [Google Cloud Console](https://console.cloud.google.com/apis/credentials), enable the Calendar API, and complete the OAuth flow to get an access token:
-
-```bash
-zenml secret create google_calendar_credentials \
-  --access_token=ya29.yourAccessToken \
-  --refresh_token=1//yourRefreshToken \
-  --client_id=yourClientId.apps.googleusercontent.com \
-  --client_secret=yourClientSecret
-```
-
-### 3. Run the morning briefing
-
-```bash
-python run.py --pipeline morning_briefing --config configs/dev.yaml
-```
-
-The briefing will include GitHub notifications and calendar events. Gmail, Slack, and Discord sections will be empty but the pipeline succeeds. Content Monitor and Inbox Processor work with no secrets at all.
-
-### What each pipeline needs
-
-| Pipeline | Required secrets | Works without secrets? |
-|----------|-----------------|----------------------|
-| Content Monitor | None | Yes (RSS feeds only) |
-| Inbox Processor | None | Yes (scans local vault) |
-| Morning Briefing | `github_token`, `google_calendar_credentials` | Partially (other sources return empty) |
-| Personal CRM | None | Yes (reads vault conversations) |
-| Weekly Review | None | Yes (reads vault data) |
-| Document Processor | `E2B_API_KEY` env var | No |
-
-## Pipelines
-
-All pipelines use `@pipeline(dynamic=True)` for runtime branching, `.map()` fan-out, and `.submit()` parallelism.
-
-### 1. Inbox Processor
-
-Scan inbox, classify notes with AI, move to permanent vault locations.
-
-**Schedule:** Daily at midnight (`0 0 * * *`)
+Single pipeline: `knowledge_ingest` (on-demand, triggered via WhatsApp or CLI).
 
 ```
-scan_inbox --> [if notes] --> classify_notes --> move_notes
+acquire ──► chunk ──► extract_concepts (per chunk) ──► cross_reference (per concept)
+                                                              │
+                                          ┌───────────────────┼───────────────────┐
+                                          ▼                   ▼                   ▼
+                                     create_note         update_note            skip
+                                          │                   │
+                                          └─────────┬─────────┘
+                                                    ▼
+                                              rebuild_links
+                                                    ▼
+                                             check_synthesis
+                                                    │
+                                          [threshold met?]──► synthesize_topic
+                                                    │
+                                                    ▼
+                                                 notify
 ```
 
-### 2. Morning Briefing
+### Steps
 
-Parameterized fan-out data collection via `.map()`, AI summary, vault archive + notification.
+| Step | File | Cache | Description |
+|------|------|-------|-------------|
+| `acquire` | `acquire.py` | No | Fetch URL (readability-lxml), process PDF (E2B), or passthrough text |
+| `chunk` | `chunk.py` | Yes | Split on markdown headers, merge small sections (max 500 words) |
+| `extract_concepts` | `extract.py` | Yes | PydanticAI extracts atomic `ExtractedConcept` models |
+| `cross_reference` | `cross_reference.py` | No | Jaccard similarity on vault titles + artifact store dedup |
+| `create_note` | `route.py` | Yes | Build `VaultNote` from concept, map type → folder |
+| `update_note` | `route.py` | No | PydanticAI merges new info into existing note |
+| `rebuild_links` | `rebuild_links.py` | No | Back-link `[[wikilinks]]` across vault, update MOC pages |
+| `check_synthesis` | `synthesis.py` | No | Group by tag, check if count ≥ threshold |
+| `synthesize_topic` | `synthesis.py` | Yes | PydanticAI generates comprehensive MOC |
+| `notify` | `notify.py` | No | Format summary → ZenML metadata → host polls → WhatsApp |
 
-**Schedule:** Weekdays at 7 AM (`0 7 * * 1-5`)
+### Note Types
 
-```
-get_source_configs --> fetch_source.map(sources) --> summarize --> deliver
-```
-
-### 3. Personal CRM
-
-Load conversations, extract people and commitments with AI, create/update people notes, flag overdue follow-ups.
-
-**Schedule:** Nightly at 11 PM (`0 23 * * *`)
-
-```
-load_conversations --> extract_people --> update_notes
-```
-
-### 4. Document Processor
-
-Receive a file, process it in an E2B sandbox (PDF, CSV, XLSX, text), summarize with AI, save to vault.
-
-**Trigger:** On-demand via snapshot
-
-```
-process --> summarize
-```
-
-### 5. Weekly Review
-
-Gather vault changes, commitments, and orphans in one step; compile review with AI.
-
-**Schedule:** Sundays at 10 AM (`0 10 * * 0`)
-
-```
-gather_data --> compile_review
-```
-
-### 6. Content Monitor
-
-Load RSS feeds, fetch latest items, summarize with AI, archive digests to vault.
-
-**Schedule:** Every 6 hours (`0 */6 * * *`)
-
-```
-load_feeds --> [if feeds] --> summarize_feeds
-```
+| Type | Folder | Example |
+|------|--------|---------|
+| concept / fact | `01-Knowledge/concepts/` | `event-sourcing.md` |
+| decision | `01-Knowledge/decisions/` | `use-kafka.md` |
+| person | `01-Knowledge/people/` | `alice-smith.md` |
+| article_summary | `03-Resources/articles/` | `scaling-microservices.md` |
+| moc / synthesis | `04-MOCs/` | `moc-distributed-systems.md` |
 
 ## Notifications
 
-Pipelines store notification text in ZenML step metadata via `log_notification()`. The NanoClaw host process reads this after pipeline completion and delivers via WhatsApp (Baileys).
+The `notify` step stores notification text in ZenML step metadata via `log_notification()`. The NanoClaw host polls completed runs every 30 seconds, reads the metadata, and delivers via WhatsApp.
+
+## Vault I/O
+
+`obsidian_io.py` abstracts vault storage:
+- **Remote (S3):** Uses ZenML artifact store's `store.open()` — no direct boto3 calls
+- **Local fallback:** Reads/writes to `VAULT_ROOT` on disk when no S3 artifact store is configured
+- Cross-reference and synthesis steps read from the same abstraction
+
+The `VaultNoteMaterializer` dual-writes each note: JSON to ZenML artifact store (standard) + markdown to the `vault/` prefix. No local Obsidian vault is required — browsing notes in Obsidian is optional (see `docs/OBSIDIAN_ZENML_SETUP.md`).
 
 ## Project Structure
 
 ```
 pipelines/
 ├── pyproject.toml
-├── run.py
+├── run.py                          # CLI entry point
 ├── configs/
-│   └── dev.yaml
+│   └── dev.yaml                    # Docker requirements, parameters
 ├── src/
 │   └── shared/
-│       ├── config.py           # Vault paths, ZenML Cloud settings
-│       ├── schemas.py          # Pydantic models (data + PydanticAI results)
-│       ├── obsidian_io.py      # Vault read/write utilities
-│       └── notify.py           # ZenML metadata-based notifications
+│       ├── config.py               # Vault paths, ZenML settings, env vars
+│       ├── schemas.py              # Pydantic models (NoteType, VaultNote, etc.)
+│       ├── obsidian_io.py          # Vault read/write via artifact store or local
+│       ├── materializers.py        # VaultNoteMaterializer (dual-write)
+│       └── notify.py               # ZenML metadata notifications
 ├── steps/
-│   ├── inbox_processor/
-│   │   ├── scan_inbox.py
-│   │   ├── classify_notes.py
-│   │   └── move_notes.py
-│   ├── morning_briefing/
-│   │   ├── fetch_source.py     # Single parameterized step (replaces 6 fetch files)
-│   │   ├── summarize.py
-│   │   └── deliver.py
-│   ├── personal_crm/
-│   │   ├── load_conversations.py
-│   │   ├── extract_people.py
-│   │   └── update_notes.py
-│   ├── document_processor/
-│   │   ├── process.py          # E2B sandbox (absorbs receive_document)
-│   │   └── summarize.py
-│   ├── weekly_review/
-│   │   ├── gather_data.py      # Combined: scan + commitments + orphans
-│   │   └── compile_review.py
-│   └── content_monitor/
-│       ├── load_feeds.py
-│       └── summarize_feeds.py
+│   └── knowledge_ingest/
+│       ├── acquire.py
+│       ├── chunk.py
+│       ├── extract.py
+│       ├── cross_reference.py
+│       ├── route.py                # create_note + update_note
+│       ├── rebuild_links.py
+│       ├── synthesis.py            # check_synthesis + synthesize_topic
+│       └── notify.py
 └── pipelines/
-    ├── inbox_processor.py
-    ├── morning_briefing.py
-    ├── personal_crm.py
-    ├── document_processor.py
-    ├── weekly_review.py
-    └── content_monitor.py
+    └── knowledge_ingest.py
 ```

@@ -1,168 +1,116 @@
-"""Pydantic models for pipeline data.
+"""Pydantic models for the Knowledge Ingestion & Synthesis Pipeline.
 
 All models use Pydantic BaseModel which has a built-in ZenML materializer.
+Models suffixed with Result/Check/Summary are used as PydanticAI result_type.
 """
 
 from __future__ import annotations
 
-from datetime import datetime
 from enum import Enum
 
 from pydantic import BaseModel, Field
 
 
-# --- Inbox Processor ---
+class NoteType(str, Enum):
+    """Types of vault notes."""
 
-
-class NoteCategory(str, Enum):
-    """Categories for inbox note classification."""
-
-    REFERENCE = "reference"
-    PROJECT = "project"
-    TASK = "task"
-    IDEA = "idea"
-    MEETING = "meeting"
+    CONCEPT = "concept"
+    FACT = "fact"
+    DECISION = "decision"
     PERSON = "person"
-    RESOURCE = "resource"
+    ARTICLE_SUMMARY = "article_summary"
+    MOC = "moc"
+    SYNTHESIS = "synthesis"
 
 
-class ClassifiedNote(BaseModel):
-    """A note that has been classified and enriched."""
+class NoteStatus(str, Enum):
+    """Maturity status of a vault note."""
 
-    source_path: str
-    title: str
-    category: NoteCategory
-    tags: list[str] = Field(default_factory=list)
-    destination_folder: str
-    summary: str = ""
-    wikilinks: list[str] = Field(default_factory=list)
+    SEEDLING = "seedling"
+    DEVELOPING = "developing"
+    EVERGREEN = "evergreen"
 
 
-# --- Morning Briefing ---
+class ConceptConfidence(str, Enum):
+    """Confidence level for extracted concepts."""
+
+    VERIFIED = "verified"
+    HIGH = "high"
+    MEDIUM = "medium"
+    SPECULATIVE = "speculative"
 
 
-class ContentItem(BaseModel):
-    """A single item from any data source (GitHub, Gmail, etc.)."""
+class ContentChunk(BaseModel):
+    """A chunk of content ready for concept extraction."""
 
-    source: str
-    title: str
-    body: str = ""
-    url: str = ""
-    timestamp: datetime | None = None
-    priority: str = "normal"
+    text: str
+    chunk_index: int
+    source_section: str = ""
+    word_count: int = 0
 
 
-class PersonMention(BaseModel):
-    """A person mentioned in the briefing context."""
+class ExtractedConcept(BaseModel):
+    """A concept extracted from a content chunk by PydanticAI."""
 
-    name: str
-    context: str
-    source: str
-
-
-class AnalysisSummary(BaseModel):
-    """AI-generated analysis of collected data."""
-
-    key_highlights: list[str] = Field(default_factory=list)
-    action_items: list[str] = Field(default_factory=list)
-    people_mentions: list[PersonMention] = Field(default_factory=list)
-    calendar_conflicts: list[str] = Field(default_factory=list)
+    title: str = Field(description="Human-readable concept title")
+    slug: str = Field(description="URL-safe slug for the note filename")
+    note_type: NoteType = Field(description="Type of note to create")
+    summary: str = Field(description="1-3 sentence summary of the concept")
+    body: str = Field(default="", description="Full markdown body content")
+    tags: list[str] = Field(default_factory=list, description="Relevant tags")
+    confidence: ConceptConfidence = Field(default=ConceptConfidence.HIGH)
+    source_chunk_index: int = Field(default=0, description="Which chunk this was extracted from")
 
 
-class MorningBriefing(BaseModel):
-    """Complete morning briefing ready for delivery."""
+class CrossRefResult(BaseModel):
+    """Result of cross-referencing a concept against the existing vault."""
 
-    date: str
-    summary: str
-    analysis: AnalysisSummary
-    items_by_source: dict[str, list[ContentItem]] = Field(default_factory=dict)
-    whatsapp_message: str = ""
-    vault_note_path: str = ""
-
-
-# --- Personal CRM ---
-
-
-class Commitment(BaseModel):
-    """A commitment or follow-up extracted from conversations."""
-
-    person: str
-    description: str
-    due_date: str | None = None
-    source: str = ""
-    status: str = "open"
-
-
-class PersonRecord(BaseModel):
-    """CRM record for a person."""
-
-    name: str
-    last_contact: str | None = None
-    commitments: list[Commitment] = Field(default_factory=list)
-    topics: list[str] = Field(default_factory=list)
-    vault_note_path: str = ""
-
-
-# --- Document Processor ---
-
-
-class ProcessedDocument(BaseModel):
-    """Result of processing a document in E2B sandbox."""
-
-    original_path: str
-    file_type: str
-    summary: str
-    key_points: list[str] = Field(default_factory=list)
-    vault_note_path: str = ""
-
-
-# --- Weekly Review ---
-
-
-class WeeklyReviewReport(BaseModel):
-    """Compiled weekly review."""
-
-    week_start: str
-    week_end: str
-    notes_created: int = 0
-    notes_modified: int = 0
-    commitments_due: list[Commitment] = Field(default_factory=list)
-    commitments_overdue: list[Commitment] = Field(default_factory=list)
-    orphan_notes: list[str] = Field(default_factory=list)
-    suggested_connections: list[str] = Field(default_factory=list)
-    summary: str = ""
-
-
-# --- Content Monitor ---
-
-
-class FeedItem(BaseModel):
-    """A single RSS feed item."""
-
-    feed_name: str
-    title: str
-    url: str
-    published: str = ""
-    summary: str = ""
+    concept: ExtractedConcept
+    action: str = Field(description="'create', 'update', or 'skip'")
+    existing_note_key: str | None = Field(
+        default=None,
+        description="S3 key of existing note if action is 'update'",
+    )
+    similarity_score: float = Field(default=0.0)
+    match_source: str = Field(default="", description="How the match was found")
 
 
 class VaultNote(BaseModel):
-    """Generic vault note representation."""
+    """A vault note ready for materialization."""
 
-    path: str
     title: str
-    content: str
-    frontmatter: dict = Field(default_factory=dict)
+    slug: str
+    note_type: NoteType
+    folder: str = Field(description="Target vault folder (e.g. '01-Knowledge/concepts')")
+    content: str = Field(description="Markdown body content")
     tags: list[str] = Field(default_factory=list)
+    wikilinks: list[str] = Field(default_factory=list)
+    status: NoteStatus = Field(default=NoteStatus.SEEDLING)
+    confidence: ConceptConfidence = Field(default=ConceptConfidence.HIGH)
+    source_url: str = ""
+    source_title: str = ""
+    zenml_run_id: str = ""
 
 
-class PipelineResult(BaseModel):
-    """Generic result wrapper for any pipeline run."""
+class SynthesisCheck(BaseModel):
+    """Result of checking whether a topic has enough notes for synthesis."""
 
-    pipeline_name: str
-    success: bool = True
-    items_processed: int = 0
+    topic: str
+    note_count: int
+    note_titles: list[str] = Field(default_factory=list)
+    should_synthesize: bool = False
+
+
+class IngestionSummary(BaseModel):
+    """Summary of a complete knowledge ingestion run."""
+
+    source_title: str = ""
+    source_type: str = ""
+    chunks_processed: int = 0
+    concepts_extracted: int = 0
     notes_created: list[str] = Field(default_factory=list)
     notes_updated: list[str] = Field(default_factory=list)
+    notes_skipped: int = 0
+    syntheses_created: list[str] = Field(default_factory=list)
+    links_added: int = 0
     errors: list[str] = Field(default_factory=list)
-    message: str = ""
