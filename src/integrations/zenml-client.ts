@@ -146,9 +146,7 @@ export class ZenMLClient {
     runConfig?: Record<string, unknown>,
   ): Promise<PipelineRunResponse> {
     // ZenML API expects { run_configuration: { parameters: {...} } }
-    const body = runConfig
-      ? { run_configuration: runConfig }
-      : {};
+    const body = runConfig ? { run_configuration: runConfig } : {};
     return this.request<PipelineRunResponse>(
       'POST',
       `/api/v1/pipeline_snapshots/${encodeURIComponent(snapshotId)}/runs`,
@@ -176,9 +174,7 @@ export class ZenMLClient {
     );
   }
 
-  async getRunMetadata(
-    runId: string,
-  ): Promise<Record<string, string>> {
+  async getRunMetadata(runId: string): Promise<Record<string, string>> {
     const run = await this.request<PipelineRunResponse>(
       'GET',
       `/api/v1/pipeline_runs/${encodeURIComponent(runId)}`,
@@ -187,7 +183,9 @@ export class ZenMLClient {
     const metadata = (run as Record<string, unknown>).run_metadata;
     if (metadata && typeof metadata === 'object') {
       const result: Record<string, string> = {};
-      for (const [key, val] of Object.entries(metadata as Record<string, unknown>)) {
+      for (const [key, val] of Object.entries(
+        metadata as Record<string, unknown>,
+      )) {
         if (typeof val === 'string') {
           result[key] = val;
         } else if (val && typeof val === 'object' && 'value' in val) {

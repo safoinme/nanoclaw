@@ -180,7 +180,10 @@ function startPipelineNotificationPoller(deps: IpcDeps): void {
 
       // Time out stale runs
       if (Date.now() - tracked.startedAt > PIPELINE_RUN_TIMEOUT) {
-        logger.warn({ runId: tracked.runId }, 'Pipeline run tracking timed out');
+        logger.warn(
+          { runId: tracked.runId },
+          'Pipeline run tracking timed out',
+        );
         completed.push(i);
         continue;
       }
@@ -507,9 +510,7 @@ export async function processTaskIpc(
         const pipelineParams = data.pipeline_params || data.params;
         const run = await zenml.triggerSnapshot(
           latestSnapshot.id as string,
-          pipelineParams
-            ? { parameters: pipelineParams }
-            : undefined,
+          pipelineParams ? { parameters: pipelineParams } : undefined,
         );
         logger.info(
           { pipelineName: data.pipeline_name, runId: run.id },
