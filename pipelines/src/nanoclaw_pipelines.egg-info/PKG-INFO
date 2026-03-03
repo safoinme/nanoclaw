@@ -1,0 +1,15 @@
+Metadata-Version: 2.4
+Name: nanoclaw-pipelines
+Version: 0.1.0
+Requires-Python: >=3.12
+Requires-Dist: zenml>=0.93.3
+Requires-Dist: pydantic-ai[anthropic]
+Requires-Dist: python-frontmatter
+Requires-Dist: e2b-code-interpreter
+Requires-Dist: httpx
+Requires-Dist: readability-lxml
+Requires-Dist: python-slugify
+Provides-Extra: dev
+Requires-Dist: pytest; extra == "dev"
+Requires-Dist: ruff; extra == "dev"
+Requires-Dist: mypy; extra == "dev"

@@ -1,0 +1,16 @@
+[project]
+name = "nanoclaw-pipelines"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "zenml>=0.93.3",
+    "pydantic-ai[anthropic]",
+    "python-frontmatter",
+    "e2b-code-interpreter",
+    "httpx",
+    "readability-lxml",
+    "python-slugify",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "ruff", "mypy"]

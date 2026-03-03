@@ -1,0 +1,14 @@
+README.md
+pyproject.toml
+src/__init__.py
+src/nanoclaw_pipelines.egg-info/PKG-INFO
+src/nanoclaw_pipelines.egg-info/SOURCES.txt
+src/nanoclaw_pipelines.egg-info/dependency_links.txt
+src/nanoclaw_pipelines.egg-info/requires.txt
+src/nanoclaw_pipelines.egg-info/top_level.txt
+src/shared/__init__.py
+src/shared/config.py
+src/shared/materializers.py
+src/shared/notify.py
+src/shared/obsidian_io.py
+src/shared/schemas.py

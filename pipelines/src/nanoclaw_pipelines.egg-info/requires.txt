@@ -1,0 +1,12 @@
+zenml>=0.93.3
+pydantic-ai[anthropic]
+python-frontmatter
+e2b-code-interpreter
+httpx
+readability-lxml
+python-slugify
+
+[dev]
+pytest
+ruff
+mypy

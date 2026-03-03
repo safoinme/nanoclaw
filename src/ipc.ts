@@ -12,6 +12,7 @@ import {
 import { AvailableGroup } from './container-runner.js';
 import { createTask, deleteTask, getTaskById, updateTask } from './db.js';
 import { isValidGroupFolder } from './group-folder.js';
+import { ZenMLClient } from './integrations/zenml-client.js';
 import { logger } from './logger.js';
 import { RegisteredGroup } from './types.js';
 
@@ -28,6 +29,17 @@ export interface IpcDeps {
     registeredJids: Set<string>,
   ) => void;
 }
+
+// Track pipeline runs for notification polling
+interface TrackedRun {
+  runId: string;
+  chatJid: string;
+  startedAt: number;
+}
+
+const trackedRuns: TrackedRun[] = [];
+const PIPELINE_POLL_INTERVAL = 30_000; // 30 seconds
+const PIPELINE_RUN_TIMEOUT = 3_600_000; // 1 hour
 
 let ipcWatcherRunning = false;
 
@@ -149,7 +161,72 @@ export function startIpcWatcher(deps: IpcDeps): void {
   };
 
   processIpcFiles();
+  startPipelineNotificationPoller(deps);
   logger.info('IPC watcher started (per-group namespaces)');
+}
+
+function startPipelineNotificationPoller(deps: IpcDeps): void {
+  const poll = async () => {
+    if (trackedRuns.length === 0) {
+      setTimeout(poll, PIPELINE_POLL_INTERVAL);
+      return;
+    }
+
+    const zenml = new ZenMLClient();
+    const completed: number[] = [];
+
+    for (let i = 0; i < trackedRuns.length; i++) {
+      const tracked = trackedRuns[i];
+
+      // Time out stale runs
+      if (Date.now() - tracked.startedAt > PIPELINE_RUN_TIMEOUT) {
+        logger.warn(
+          { runId: tracked.runId },
+          'Pipeline run tracking timed out',
+        );
+        completed.push(i);
+        continue;
+      }
+
+      try {
+        const run = await zenml.getPipelineRun(tracked.runId);
+        if (run.status === 'completed' || run.status === 'failed') {
+          // Try to read notification from run metadata
+          try {
+            const metadata = await zenml.getRunMetadata(tracked.runId);
+            const notificationText =
+              metadata?.notification_text ||
+              `Pipeline run ${tracked.runId}: ${run.status}`;
+            await deps.sendMessage(tracked.chatJid, notificationText);
+          } catch {
+            await deps.sendMessage(
+              tracked.chatJid,
+              `Pipeline run ${tracked.runId}: ${run.status}`,
+            );
+          }
+          completed.push(i);
+          logger.info(
+            { runId: tracked.runId, status: run.status },
+            'Pipeline run completed, notification sent',
+          );
+        }
+      } catch (err) {
+        logger.error(
+          { err, runId: tracked.runId },
+          'Error polling pipeline run status',
+        );
+      }
+    }
+
+    // Remove completed runs (reverse order to preserve indices)
+    for (const idx of completed.reverse()) {
+      trackedRuns.splice(idx, 1);
+    }
+
+    setTimeout(poll, PIPELINE_POLL_INTERVAL);
+  };
+
+  poll();
 }
 
 export async function processTaskIpc(
@@ -170,6 +247,11 @@ export async function processTaskIpc(
     trigger?: string;
     requiresTrigger?: boolean;
     containerConfig?: RegisteredGroup['containerConfig'];
+    // For ZenML pipeline triggers
+    pipeline_name?: string;
+    pipeline_params?: Record<string, string>;
+    params?: Record<string, string>;
+    run_id?: string;
   },
   sourceGroup: string, // Verified identity from IPC directory
   isMain: boolean, // Verified from directory path
@@ -380,6 +462,126 @@ export async function processTaskIpc(
         );
       }
       break;
+
+    case 'trigger_zenml_pipeline': {
+      if (!isMain) {
+        logger.warn(
+          { sourceGroup },
+          'Unauthorized trigger_zenml_pipeline attempt blocked',
+        );
+        break;
+      }
+      if (!data.pipeline_name) {
+        logger.warn('trigger_zenml_pipeline missing pipeline_name');
+        break;
+      }
+      try {
+        const zenml = new ZenMLClient();
+        const pipelines = await zenml.listPipelines();
+        const pipeline = pipelines.items.find(
+          (p) => p.name === data.pipeline_name,
+        );
+        if (!pipeline) {
+          const msg = `Pipeline "${data.pipeline_name}" not found`;
+          logger.warn(msg);
+          if (data.chatJid) await deps.sendMessage(data.chatJid, msg);
+          break;
+        }
+        const snapshots = await zenml.listSnapshots(pipeline.id);
+        if (!snapshots.items.length) {
+          const msg = `No snapshots found for pipeline "${data.pipeline_name}"`;
+          logger.warn(msg);
+          if (data.chatJid) await deps.sendMessage(data.chatJid, msg);
+          break;
+        }
+        // Pick the most recent snapshot that has a build (build is under resources.build)
+        const snapshotWithBuild = snapshots.items.find((s) => {
+          const resources = (s as Record<string, unknown>).resources as
+            | Record<string, unknown>
+            | undefined;
+          return resources?.build != null;
+        });
+        const latestSnapshot = snapshotWithBuild ?? snapshots.items[0];
+        if (!snapshotWithBuild) {
+          logger.warn(
+            'No snapshot with an associated build found — attempting latest anyway',
+          );
+        }
+        const pipelineParams = data.pipeline_params || data.params;
+        const run = await zenml.triggerSnapshot(
+          latestSnapshot.id as string,
+          pipelineParams ? { parameters: pipelineParams } : undefined,
+        );
+        logger.info(
+          { pipelineName: data.pipeline_name, runId: run.id },
+          'ZenML pipeline triggered',
+        );
+
+        // Track run for notification polling
+        if (data.chatJid) {
+          trackedRuns.push({
+            runId: run.id,
+            chatJid: data.chatJid,
+            startedAt: Date.now(),
+          });
+          await deps.sendMessage(
+            data.chatJid,
+            `Pipeline "${data.pipeline_name}" triggered. Run ID: ${run.id}`,
+          );
+        }
+      } catch (err) {
+        const error = err instanceof Error ? err.message : String(err);
+        logger.error({ error }, 'Failed to trigger ZenML pipeline');
+        if (data.chatJid) {
+          await deps.sendMessage(
+            data.chatJid,
+            `Failed to trigger pipeline: ${error}`,
+          );
+        }
+      }
+      break;
+    }
+
+    case 'check_pipeline_status': {
+      if (!isMain) {
+        logger.warn(
+          { sourceGroup },
+          'Unauthorized check_pipeline_status attempt blocked',
+        );
+        break;
+      }
+      if (!data.run_id) {
+        logger.warn('check_pipeline_status missing run_id');
+        break;
+      }
+      try {
+        const zenml = new ZenMLClient();
+        const run = await zenml.getPipelineRun(data.run_id);
+        logger.info(
+          { runId: data.run_id, status: run.status },
+          'Pipeline run status retrieved',
+        );
+        if (data.chatJid) {
+          await deps.sendMessage(
+            data.chatJid,
+            `Pipeline run ${data.run_id}: ${run.status}`,
+          );
+        }
+      } catch (err) {
+        const error = err instanceof Error ? err.message : String(err);
+        logger.error(
+          { error, runId: data.run_id },
+          'Failed to check pipeline status',
+        );
+        if (data.chatJid) {
+          await deps.sendMessage(
+            data.chatJid,
+            `Failed to check pipeline status: ${error}`,
+          );
+        }
+      }
+      break;
+    }
 
     default:
       logger.warn({ type: data.type }, 'Unknown IPC task type');

@@ -57,10 +57,13 @@ export interface ScheduledTask {
   group_folder: string;
   chat_jid: string;
   prompt: string;
-  schedule_type: 'cron' | 'interval' | 'once';
+  schedule_type: 'cron' | 'interval' | 'once' | 'zenml_pipeline';
   schedule_value: string;
   context_mode: 'group' | 'isolated';
   next_run: string | null;
+  pipeline_name?: string;
+  pipeline_params?: Record<string, string>;
+  snapshot_id?: string;
   last_run: string | null;
   last_result: string | null;
   status: 'active' | 'paused' | 'completed';
